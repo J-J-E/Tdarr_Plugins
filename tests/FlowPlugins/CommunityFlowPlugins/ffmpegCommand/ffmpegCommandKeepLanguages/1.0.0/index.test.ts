@@ -349,6 +349,24 @@ describe('ffmpegCommandKeepLanguages Plugin', () => {
       expect(removedIndexes(args)).toEqual([3, 7]);
     });
 
+    it('resolves {{{args.userVariables.global.X}}} placeholders that Tdarr left in a comma list', async () => {
+      mockAxios
+        .mockResolvedValueOnce({ data: [] })
+        .mockResolvedValueOnce({ data: { movie: undefined } })
+        .mockResolvedValueOnce(known);
+      const args = makeArgs({
+        ...multiInputs,
+        radarrApiKey: '{{{args.userVariables.global.keyOne}}}, {{{args.userVariables.global.keyTwo}}}',
+      });
+      (args as unknown as { userVariables: unknown }).userVariables = {
+        global: { keyOne: 'k1', keyTwo: 'k2' }, library: {},
+      };
+      await plugin(args);
+      expect(mockAxios.mock.calls[0][0].headers['X-Api-Key']).toBe('k1');
+      expect(mockAxios.mock.calls[2][0].headers['X-Api-Key']).toBe('k2');
+      expect(removedIndexes(args)).toEqual([3, 7]);
+    });
+
     it('moves on to the next instance when one errors', async () => {
       mockAxios
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))

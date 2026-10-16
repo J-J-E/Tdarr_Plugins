@@ -319,10 +319,24 @@ var getArrKind = function (filePath) {
     return '';
 };
 var requestTimeoutMs = 15000;
+/**
+ * Resolves a `{{{args.userVariables.global.NAME}}}` (or `.library.NAME`) placeholder that Tdarr left
+ * unreplaced, e.g. because several placeholders share one comma separated input. Other values pass through.
+ */
+var resolveVariable = function (value, args) {
+    var _a;
+    var match = /^\{\{\{\s*args\.userVariables\.(global|library)\.([A-Za-z0-9_]+)\s*\}\}\}$/.exec(value);
+    if (!match) {
+        return value;
+    }
+    var scope = (_a = args.userVariables) === null || _a === void 0 ? void 0 : _a[match[1]];
+    var resolved = scope === null || scope === void 0 ? void 0 : scope[match[2]];
+    return resolved === undefined || resolved === null ? '' : String(resolved);
+};
 /** Pairs comma separated URLs and API keys by position. Entries missing a URL or a key are skipped. */
-var parseInstances = function (urls, apiKeys) {
-    var urlList = urls.split(',').map(function (item) { return item.trim(); });
-    var keyList = apiKeys.split(',').map(function (item) { return item.trim(); });
+var parseInstances = function (urls, apiKeys, args) {
+    var urlList = urls.split(',').map(function (item) { return resolveVariable(item.trim(), args); });
+    var keyList = apiKeys.split(',').map(function (item) { return resolveVariable(item.trim(), args); });
     var instances = [];
     urlList.forEach(function (url, i) {
         if (url && keyList[i]) {
@@ -538,8 +552,8 @@ var plugin = function (args) { return __awaiter(void 0, void 0, void 0, function
             case 1:
                 _a.trys.push([1, 3, , 4]);
                 return [4 /*yield*/, getOriginalLanguage(args, {
-                        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey)),
-                        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey)),
+                        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey), args),
+                        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey), args),
                         tmdbApiKey: str(args.inputs.tmdbApiKey),
                     })];
             case 2:

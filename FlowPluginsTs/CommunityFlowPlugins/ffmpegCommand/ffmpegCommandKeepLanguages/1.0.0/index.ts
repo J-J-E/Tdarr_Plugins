@@ -375,10 +375,24 @@ interface IOriginalLanguageConfig {
   tmdbApiKey: string,
 }
 
+/**
+ * Resolves a `{{{args.userVariables.global.NAME}}}` (or `.library.NAME`) placeholder that Tdarr left
+ * unreplaced, e.g. because several placeholders share one comma separated input. Other values pass through.
+ */
+const resolveVariable = (value: string, args: IpluginInputArgs): string => {
+  const match = /^\{\{\{\s*args\.userVariables\.(global|library)\.([A-Za-z0-9_]+)\s*\}\}\}$/.exec(value);
+  if (!match) {
+    return value;
+  }
+  const scope = (args.userVariables as unknown as Record<string, Record<string, unknown>> | undefined)?.[match[1]];
+  const resolved = scope?.[match[2]];
+  return resolved === undefined || resolved === null ? '' : String(resolved);
+};
+
 /** Pairs comma separated URLs and API keys by position. Entries missing a URL or a key are skipped. */
-const parseInstances = (urls: string, apiKeys: string): IArrInstance[] => {
-  const urlList = urls.split(',').map((item) => item.trim());
-  const keyList = apiKeys.split(',').map((item) => item.trim());
+const parseInstances = (urls: string, apiKeys: string, args: IpluginInputArgs): IArrInstance[] => {
+  const urlList = urls.split(',').map((item) => resolveVariable(item.trim(), args));
+  const keyList = apiKeys.split(',').map((item) => resolveVariable(item.trim(), args));
   const instances: IArrInstance[] = [];
   urlList.forEach((url, i) => {
     if (url && keyList[i]) {
@@ -570,8 +584,8 @@ const plugin = async (args: IpluginInputArgs): Promise<IpluginOutputArgs> => {
     let original = '';
     try {
       original = await getOriginalLanguage(args, {
-        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey)),
-        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey)),
+        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey), args),
+        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey), args),
         tmdbApiKey: str(args.inputs.tmdbApiKey),
       });
     } catch (err) {
