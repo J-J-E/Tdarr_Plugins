@@ -88,7 +88,7 @@ var details = function () { return ({
             inputUI: {
                 type: 'switch',
             },
-            tooltip: "\n      Also keep the original language of the movie or series.\n\n      The original language is looked up using the Radarr, Sonarr and/or TMDB settings below.\n      All of them are optional. If none is set, or the lookup fails, only the languages in\n      \"Languages To Keep\" (plus the other keep options) are used.\n\n      The title is found by the TMDB id in the path ([tmdbid-123] or {tmdb-123}).\n      If there is none, Radarr and Sonarr are asked to parse the file name instead.\n      ",
+            tooltip: "\n      Also keep the original language of the movie or series.\n\n      The original language is looked up using the Radarr, Sonarr and/or TMDB settings below.\n      All of them are optional. If the original language cannot be determined (nothing is set,\n      no instance knows the title, or a lookup fails), the \"If Original Language Unknown\" option\n      decides what happens to the audio streams.\n\n      The title is found by the TMDB id in the path ([tmdbid-123] or {tmdb-123}).\n      If there is none, Radarr and Sonarr are asked to parse the file name instead.\n      ",
         },
         {
             label: 'Radarr URL',
@@ -99,7 +99,7 @@ var details = function () { return ({
                 type: 'text',
                 displayConditions: originalLanguageDisplayConditions,
             },
-            tooltip: "\n      Optional. Radarr base URL, used to look up the original language of movies.\n\n      Example:\n      http://192.168.1.1:7878\n      ",
+            tooltip: "\n      Optional. Radarr base URL, used to look up the original language of movies.\n      Several instances can be given as a comma separated list, paired by position with the\n      API keys below. They are tried in order until one knows the title.\n\n      Example:\n      http://192.168.1.1:7878\n      http://192.168.1.1:7878,http://192.168.1.1:7879\n      ",
         },
         {
             label: 'Radarr API Key',
@@ -110,7 +110,7 @@ var details = function () { return ({
                 type: 'text',
                 displayConditions: originalLanguageDisplayConditions,
             },
-            tooltip: "\n      Optional. Radarr API key. A flow variable can be used to avoid typing the key here.\n\n      Example:\n      {{{args.userVariables.global.radarrApiKey}}}\n      ",
+            tooltip: "\n      Optional. Radarr API key. A flow variable can be used to avoid typing the key here.\n      For several instances give one key per URL, comma separated, in the same order.\n\n      Example:\n      {{{args.userVariables.global.radarrApiKey}}}\n      ",
         },
         {
             label: 'Sonarr URL',
@@ -121,7 +121,7 @@ var details = function () { return ({
                 type: 'text',
                 displayConditions: originalLanguageDisplayConditions,
             },
-            tooltip: "\n      Optional. Sonarr base URL, used to look up the original language of series.\n\n      Example:\n      http://192.168.1.1:8989\n      ",
+            tooltip: "\n      Optional. Sonarr base URL, used to look up the original language of series.\n      Several instances can be given as a comma separated list, paired by position with the\n      API keys below. They are tried in order until one knows the title.\n\n      Example:\n      http://192.168.1.1:8989\n      http://192.168.1.1:8989,http://192.168.1.1:8990\n      ",
         },
         {
             label: 'Sonarr API Key',
@@ -132,7 +132,7 @@ var details = function () { return ({
                 type: 'text',
                 displayConditions: originalLanguageDisplayConditions,
             },
-            tooltip: "\n      Optional. Sonarr API key. A flow variable can be used to avoid typing the key here.\n\n      Example:\n      {{{args.userVariables.global.sonarrApiKey}}}\n      ",
+            tooltip: "\n      Optional. Sonarr API key. A flow variable can be used to avoid typing the key here.\n      For several instances give one key per URL, comma separated, in the same order.\n\n      Example:\n      {{{args.userVariables.global.sonarrApiKey}}}\n      ",
         },
         {
             label: 'TMDB API Key',
@@ -144,6 +144,21 @@ var details = function () { return ({
                 displayConditions: originalLanguageDisplayConditions,
             },
             tooltip: "\n      Optional. TMDB API key (v3 key or v4 read access token), used when Radarr and Sonarr are\n      not set or do not know the title. Needs a TMDB id in the path.\n      ",
+        },
+        {
+            label: 'If Original Language Unknown',
+            name: 'ifOriginalLanguageUnknown',
+            type: 'string',
+            defaultValue: 'keepAllAudio',
+            inputUI: {
+                type: 'dropdown',
+                options: [
+                    'keepAllAudio',
+                    'keepListOnly',
+                ],
+                displayConditions: originalLanguageDisplayConditions,
+            },
+            tooltip: "\n      What to do with audio streams when \"Keep Original Language\" is on but the original language\n      could not be determined (no usable service, no service knows the title, or a lookup failed).\n\n      keepAllAudio: keep every audio stream (safe, the original language track cannot be lost).\n      Subtitles are still filtered by the keep list, forced and undefined options.\n\n      keepListOnly: only keep the languages in \"Languages To Keep\" (plus the other keep options).\n      The original language track is removed if it is not in the list.\n      ",
         },
         {
             label: 'Keep Forced Subtitles',
@@ -304,6 +319,18 @@ var getArrKind = function (filePath) {
     return '';
 };
 var requestTimeoutMs = 15000;
+/** Pairs comma separated URLs and API keys by position. Entries missing a URL or a key are skipped. */
+var parseInstances = function (urls, apiKeys) {
+    var urlList = urls.split(',').map(function (item) { return item.trim(); });
+    var keyList = apiKeys.split(',').map(function (item) { return item.trim(); });
+    var instances = [];
+    urlList.forEach(function (url, i) {
+        if (url && keyList[i]) {
+            instances.push({ url: url, apiKey: keyList[i] });
+        }
+    });
+    return instances;
+};
 var arrGet = function (args, baseUrl, apiKey, apiPath, params) { return __awaiter(void 0, void 0, void 0, function () {
     var res;
     return __generator(this, function (_a) {
@@ -326,14 +353,14 @@ var arrGet = function (args, baseUrl, apiKey, apiPath, params) { return __awaite
 }); };
 // Ignore results for a different title in case the server ignores the tmdbId filter
 var findByTmdbId = function (data, tmdbId) { return (Array.isArray(data) ? data : [data]).find(function (item) { return item && String(item.tmdbId) === tmdbId && item.originalLanguage; }); };
-var lookupArr = function (args, kind, cfg, tmdbId, libraryPath) { return __awaiter(void 0, void 0, void 0, function () {
+var lookupArr = function (args, kind, instance, tmdbId, libraryPath) { return __awaiter(void 0, void 0, void 0, function () {
     var baseUrl, apiKey, apiPath, name, title, _a, fileName, parsed, languageName, code;
     var _b;
     return __generator(this, function (_c) {
         switch (_c.label) {
             case 0:
-                baseUrl = kind === 'radarr' ? cfg.radarrUrl : cfg.sonarrUrl;
-                apiKey = kind === 'radarr' ? cfg.radarrApiKey : cfg.sonarrApiKey;
+                baseUrl = instance.url;
+                apiKey = instance.apiKey;
                 apiPath = kind === 'radarr' ? '/api/v3/movie' : '/api/v3/series';
                 name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
                 if (!tmdbId) return [3 /*break*/, 2];
@@ -430,11 +457,11 @@ var getOriginalLanguage = function (args, cfg) { return __awaiter(void 0, void 0
                 tmdbId = getTmdbIdFromPath(libraryPath) || getTmdbIdFromPath(args.inputFileObj._id);
                 kind = getArrKind(libraryPath);
                 arrs = [];
-                if (cfg.radarrUrl && cfg.radarrApiKey && kind !== 'sonarr') {
-                    arrs.push('radarr');
+                if (kind !== 'sonarr') {
+                    cfg.radarr.forEach(function (instance, i) { return arrs.push({ kind: 'radarr', instance: instance, label: "Radarr #".concat(i + 1) }); });
                 }
-                if (cfg.sonarrUrl && cfg.sonarrApiKey && kind !== 'radarr') {
-                    arrs.push('sonarr');
+                if (kind !== 'radarr') {
+                    cfg.sonarr.forEach(function (instance, i) { return arrs.push({ kind: 'sonarr', instance: instance, label: "Sonarr #".concat(i + 1) }); });
                 }
                 i = 0;
                 _b.label = 1;
@@ -443,7 +470,7 @@ var getOriginalLanguage = function (args, cfg) { return __awaiter(void 0, void 0
                 _b.label = 2;
             case 2:
                 _b.trys.push([2, 4, , 5]);
-                return [4 /*yield*/, lookupArr(args, arrs[i], cfg, tmdbId, libraryPath)];
+                return [4 /*yield*/, lookupArr(args, arrs[i].kind, arrs[i].instance, tmdbId, libraryPath)];
             case 3:
                 code = _b.sent();
                 if (code) {
@@ -452,7 +479,8 @@ var getOriginalLanguage = function (args, cfg) { return __awaiter(void 0, void 0
                 return [3 /*break*/, 5];
             case 4:
                 err_2 = _b.sent();
-                args.jobLog("".concat(arrs[i], " lookup failed: ").concat(err_2 === null || err_2 === void 0 ? void 0 : err_2.message, "\n"));
+                // a failing instance is treated like one that does not know the title
+                args.jobLog("".concat(arrs[i].label, " lookup failed: ").concat(err_2 === null || err_2 === void 0 ? void 0 : err_2.message, "\n"));
                 return [3 /*break*/, 5];
             case 5:
                 i += 1;
@@ -472,7 +500,7 @@ var getOriginalLanguage = function (args, cfg) { return __awaiter(void 0, void 0
     });
 }); };
 var plugin = function (args) { return __awaiter(void 0, void 0, void 0, function () {
-    var lib, asBool, str, streamTypes, filtered, keepForced, keepUndefined, keepSet, original, err_3, streams, decisions, audioDecisions, removedCount, removedDefaultAudio, keptAudio;
+    var lib, asBool, str, streamTypes, filtered, keepForced, keepUndefined, keepSet, keepAllAudio, original, err_3, streams, decisions, audioDecisions, removedCount, removedDefaultAudio, keptAudio;
     return __generator(this, function (_a) {
         switch (_a.label) {
             case 0:
@@ -503,16 +531,15 @@ var plugin = function (args) { return __awaiter(void 0, void 0, void 0, function
                         args.jobLog("Ignoring unrecognised language '".concat(item, "' in Languages To Keep\n"));
                     }
                 });
+                keepAllAudio = false;
                 if (!asBool(args.inputs.keepOriginalLanguage)) return [3 /*break*/, 5];
                 original = '';
                 _a.label = 1;
             case 1:
                 _a.trys.push([1, 3, , 4]);
                 return [4 /*yield*/, getOriginalLanguage(args, {
-                        radarrUrl: str(args.inputs.radarrUrl),
-                        radarrApiKey: str(args.inputs.radarrApiKey),
-                        sonarrUrl: str(args.inputs.sonarrUrl),
-                        sonarrApiKey: str(args.inputs.sonarrApiKey),
+                        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey)),
+                        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey)),
                         tmdbApiKey: str(args.inputs.tmdbApiKey),
                     })];
             case 2:
@@ -527,8 +554,14 @@ var plugin = function (args) { return __awaiter(void 0, void 0, void 0, function
                     keepSet.push(matchKey(original));
                     args.jobLog("Keeping original language ".concat(original, "\n"));
                 }
+                else if (str(args.inputs.ifOriginalLanguageUnknown) === 'keepListOnly') {
+                    args.jobLog('Original language unknown, ifOriginalLanguageUnknown=keepListOnly applied: '
+                        + 'only keeping the configured languages\n');
+                }
                 else {
-                    args.jobLog('Original language unknown, only keeping the configured languages\n');
+                    keepAllAudio = true;
+                    args.jobLog('Original language unknown, ifOriginalLanguageUnknown=keepAllAudio applied: '
+                        + 'keeping all audio streams, subtitles are still filtered\n');
                 }
                 _a.label = 5;
             case 5:
@@ -540,7 +573,10 @@ var plugin = function (args) { return __awaiter(void 0, void 0, void 0, function
                     var code = toIso6392(tag);
                     var keep = true;
                     var reason = '';
-                    if (undefinedTags.includes(tag)) {
+                    if (keepAllAudio && stream.codec_type === 'audio') {
+                        reason = 'original language unknown, all audio kept';
+                    }
+                    else if (undefinedTags.includes(tag)) {
                         keep = keepUndefined;
                         reason = keep ? 'undefined language kept' : 'undefined language not kept';
                     }

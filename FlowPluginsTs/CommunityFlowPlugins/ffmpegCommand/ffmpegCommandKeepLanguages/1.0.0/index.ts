@@ -69,8 +69,9 @@ const details = (): IpluginDetails => ({
       Also keep the original language of the movie or series.
 
       The original language is looked up using the Radarr, Sonarr and/or TMDB settings below.
-      All of them are optional. If none is set, or the lookup fails, only the languages in
-      "Languages To Keep" (plus the other keep options) are used.
+      All of them are optional. If the original language cannot be determined (nothing is set,
+      no instance knows the title, or a lookup fails), the "If Original Language Unknown" option
+      decides what happens to the audio streams.
 
       The title is found by the TMDB id in the path ([tmdbid-123] or {tmdb-123}).
       If there is none, Radarr and Sonarr are asked to parse the file name instead.
@@ -87,9 +88,12 @@ const details = (): IpluginDetails => ({
       },
       tooltip: `
       Optional. Radarr base URL, used to look up the original language of movies.
+      Several instances can be given as a comma separated list, paired by position with the
+      API keys below. They are tried in order until one knows the title.
 
       Example:
       http://192.168.1.1:7878
+      http://192.168.1.1:7878,http://192.168.1.1:7879
       `,
     },
     {
@@ -103,6 +107,7 @@ const details = (): IpluginDetails => ({
       },
       tooltip: `
       Optional. Radarr API key. A flow variable can be used to avoid typing the key here.
+      For several instances give one key per URL, comma separated, in the same order.
 
       Example:
       {{{args.userVariables.global.radarrApiKey}}}
@@ -119,9 +124,12 @@ const details = (): IpluginDetails => ({
       },
       tooltip: `
       Optional. Sonarr base URL, used to look up the original language of series.
+      Several instances can be given as a comma separated list, paired by position with the
+      API keys below. They are tried in order until one knows the title.
 
       Example:
       http://192.168.1.1:8989
+      http://192.168.1.1:8989,http://192.168.1.1:8990
       `,
     },
     {
@@ -135,6 +143,7 @@ const details = (): IpluginDetails => ({
       },
       tooltip: `
       Optional. Sonarr API key. A flow variable can be used to avoid typing the key here.
+      For several instances give one key per URL, comma separated, in the same order.
 
       Example:
       {{{args.userVariables.global.sonarrApiKey}}}
@@ -152,6 +161,30 @@ const details = (): IpluginDetails => ({
       tooltip: `
       Optional. TMDB API key (v3 key or v4 read access token), used when Radarr and Sonarr are
       not set or do not know the title. Needs a TMDB id in the path.
+      `,
+    },
+    {
+      label: 'If Original Language Unknown',
+      name: 'ifOriginalLanguageUnknown',
+      type: 'string',
+      defaultValue: 'keepAllAudio',
+      inputUI: {
+        type: 'dropdown',
+        options: [
+          'keepAllAudio',
+          'keepListOnly',
+        ],
+        displayConditions: originalLanguageDisplayConditions,
+      },
+      tooltip: `
+      What to do with audio streams when "Keep Original Language" is on but the original language
+      could not be determined (no usable service, no service knows the title, or a lookup failed).
+
+      keepAllAudio: keep every audio stream (safe, the original language track cannot be lost).
+      Subtitles are still filtered by the keep list, forced and undefined options.
+
+      keepListOnly: only keep the languages in "Languages To Keep" (plus the other keep options).
+      The original language track is removed if it is not in the list.
       `,
     },
     {
@@ -331,13 +364,29 @@ const getArrKind = (filePath: string): 'radarr' | 'sonarr' | '' => {
 
 const requestTimeoutMs = 15000;
 
+interface IArrInstance {
+  url: string,
+  apiKey: string,
+}
+
 interface IOriginalLanguageConfig {
-  radarrUrl: string,
-  radarrApiKey: string,
-  sonarrUrl: string,
-  sonarrApiKey: string,
+  radarr: IArrInstance[],
+  sonarr: IArrInstance[],
   tmdbApiKey: string,
 }
+
+/** Pairs comma separated URLs and API keys by position. Entries missing a URL or a key are skipped. */
+const parseInstances = (urls: string, apiKeys: string): IArrInstance[] => {
+  const urlList = urls.split(',').map((item) => item.trim());
+  const keyList = apiKeys.split(',').map((item) => item.trim());
+  const instances: IArrInstance[] = [];
+  urlList.forEach((url, i) => {
+    if (url && keyList[i]) {
+      instances.push({ url, apiKey: keyList[i] });
+    }
+  });
+  return instances;
+};
 
 interface IArrTitle {
   tmdbId?: number,
@@ -372,12 +421,12 @@ const findByTmdbId = (data: unknown, tmdbId: string): IArrTitle | undefined => (
 const lookupArr = async (
   args: IpluginInputArgs,
   kind: 'radarr' | 'sonarr',
-  cfg: IOriginalLanguageConfig,
+  instance: IArrInstance,
   tmdbId: string,
   libraryPath: string,
 ): Promise<string> => {
-  const baseUrl = kind === 'radarr' ? cfg.radarrUrl : cfg.sonarrUrl;
-  const apiKey = kind === 'radarr' ? cfg.radarrApiKey : cfg.sonarrApiKey;
+  const baseUrl = instance.url;
+  const { apiKey } = instance;
   const apiPath = kind === 'radarr' ? '/api/v3/movie' : '/api/v3/series';
   const name = kind === 'radarr' ? 'Radarr' : 'Sonarr';
 
@@ -453,23 +502,24 @@ const getOriginalLanguage = async (args: IpluginInputArgs, cfg: IOriginalLanguag
   const tmdbId = getTmdbIdFromPath(libraryPath) || getTmdbIdFromPath(args.inputFileObj._id);
   const kind = getArrKind(libraryPath);
 
-  const arrs: ('radarr' | 'sonarr')[] = [];
-  if (cfg.radarrUrl && cfg.radarrApiKey && kind !== 'sonarr') {
-    arrs.push('radarr');
+  const arrs: { kind: 'radarr' | 'sonarr', instance: IArrInstance, label: string }[] = [];
+  if (kind !== 'sonarr') {
+    cfg.radarr.forEach((instance, i) => arrs.push({ kind: 'radarr', instance, label: `Radarr #${i + 1}` }));
   }
-  if (cfg.sonarrUrl && cfg.sonarrApiKey && kind !== 'radarr') {
-    arrs.push('sonarr');
+  if (kind !== 'radarr') {
+    cfg.sonarr.forEach((instance, i) => arrs.push({ kind: 'sonarr', instance, label: `Sonarr #${i + 1}` }));
   }
 
   for (let i = 0; i < arrs.length; i += 1) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const code = await lookupArr(args, arrs[i], cfg, tmdbId, libraryPath);
+      const code = await lookupArr(args, arrs[i].kind, arrs[i].instance, tmdbId, libraryPath);
       if (code) {
         return code;
       }
     } catch (err) {
-      args.jobLog(`${arrs[i]} lookup failed: ${(err as Error)?.message}\n`);
+      // a failing instance is treated like one that does not know the title
+      args.jobLog(`${arrs[i].label} lookup failed: ${(err as Error)?.message}\n`);
     }
   }
 
@@ -515,14 +565,13 @@ const plugin = async (args: IpluginInputArgs): Promise<IpluginOutputArgs> => {
       }
     });
 
+  let keepAllAudio = false;
   if (asBool(args.inputs.keepOriginalLanguage)) {
     let original = '';
     try {
       original = await getOriginalLanguage(args, {
-        radarrUrl: str(args.inputs.radarrUrl),
-        radarrApiKey: str(args.inputs.radarrApiKey),
-        sonarrUrl: str(args.inputs.sonarrUrl),
-        sonarrApiKey: str(args.inputs.sonarrApiKey),
+        radarr: parseInstances(str(args.inputs.radarrUrl), str(args.inputs.radarrApiKey)),
+        sonarr: parseInstances(str(args.inputs.sonarrUrl), str(args.inputs.sonarrApiKey)),
         tmdbApiKey: str(args.inputs.tmdbApiKey),
       });
     } catch (err) {
@@ -531,8 +580,13 @@ const plugin = async (args: IpluginInputArgs): Promise<IpluginOutputArgs> => {
     if (original) {
       keepSet.push(matchKey(original));
       args.jobLog(`Keeping original language ${original}\n`);
+    } else if (str(args.inputs.ifOriginalLanguageUnknown) === 'keepListOnly') {
+      args.jobLog('Original language unknown, ifOriginalLanguageUnknown=keepListOnly applied: '
+        + 'only keeping the configured languages\n');
     } else {
-      args.jobLog('Original language unknown, only keeping the configured languages\n');
+      keepAllAudio = true;
+      args.jobLog('Original language unknown, ifOriginalLanguageUnknown=keepAllAudio applied: '
+        + 'keeping all audio streams, subtitles are still filtered\n');
     }
   }
 
@@ -545,7 +599,9 @@ const plugin = async (args: IpluginInputArgs): Promise<IpluginOutputArgs> => {
       const code = toIso6392(tag);
       let keep = true;
       let reason = '';
-      if (undefinedTags.includes(tag)) {
+      if (keepAllAudio && stream.codec_type === 'audio') {
+        reason = 'original language unknown, all audio kept';
+      } else if (undefinedTags.includes(tag)) {
         keep = keepUndefined;
         reason = keep ? 'undefined language kept' : 'undefined language not kept';
       } else if (stream.codec_type === 'subtitle' && keepForced && isForced(stream)) {

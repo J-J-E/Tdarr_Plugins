@@ -104,7 +104,7 @@ describe('ffmpegCommandKeepLanguages Plugin', () => {
       const d = details();
       expect(d.inputs.map((i) => i.name)).toEqual([
         'languagesToKeep', 'keepOriginalLanguage', 'radarrUrl', 'radarrApiKey', 'sonarrUrl', 'sonarrApiKey',
-        'tmdbApiKey', 'keepForcedSubtitles', 'keepUndefined', 'streamTypes',
+        'tmdbApiKey', 'ifOriginalLanguageUnknown', 'keepForcedSubtitles', 'keepUndefined', 'streamTypes',
       ]);
       expect(d.inputs.find((i) => i.name === 'languagesToKeep')?.defaultValue).toBe('eng');
       expect(d.outputs.map((o) => o.number)).toEqual([1, 2]);
@@ -294,14 +294,16 @@ describe('ffmpegCommandKeepLanguages Plugin', () => {
 
     it('falls back to the keep list when the lookup fails', async () => {
       mockAxios.mockRejectedValue(new Error('timeout of 15000ms exceeded'));
-      const args = makeArgs(radarrInputs);
+      const args = makeArgs({ ...radarrInputs, ifOriginalLanguageUnknown: 'keepListOnly' });
       const result = await plugin(args);
       expect(result.outputNumber).toBe(1);
       expect(removedIndexes(args)).toEqual([2, 3, 5, 7]);
     });
 
     it('falls back to the keep list when nothing is configured', async () => {
-      const args = makeArgs({ languagesToKeep: 'eng', keepOriginalLanguage: true });
+      const args = makeArgs({
+        languagesToKeep: 'eng', keepOriginalLanguage: true, ifOriginalLanguageUnknown: 'keepListOnly',
+      });
       await plugin(args);
       expect(mockAxios).not.toHaveBeenCalled();
       expect(removedIndexes(args)).toEqual([2, 3, 5, 7]);
@@ -309,7 +311,7 @@ describe('ffmpegCommandKeepLanguages Plugin', () => {
 
     it('falls back to the keep list when Radarr returns an unrecognised language', async () => {
       mockAxios.mockResolvedValueOnce({ data: [{ tmdbId: 123, originalLanguage: { name: 'Klingon' } }] });
-      const args = makeArgs(radarrInputs);
+      const args = makeArgs({ ...radarrInputs, ifOriginalLanguageUnknown: 'keepListOnly' });
       await plugin(args);
       expect(removedIndexes(args)).toEqual([2, 3, 5, 7]);
     });
@@ -318,6 +320,107 @@ describe('ffmpegCommandKeepLanguages Plugin', () => {
       const args = makeArgs({ ...radarrInputs, keepOriginalLanguage: false });
       await plugin(args);
       expect(mockAxios).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('several instances and unknown original language', () => {
+    const multiInputs = {
+      languagesToKeep: 'eng',
+      keepOriginalLanguage: true,
+      radarrUrl: 'http://r1:7878, http://r2:7879/',
+      radarrApiKey: 'k1,k2',
+    };
+    const known = { data: [{ tmdbId: 123, originalLanguage: { name: 'Japanese' } }] };
+
+    it('tries the second instance when the first does not know the title', async () => {
+      mockAxios
+        .mockResolvedValueOnce({ data: [] }) // r1 movie
+        .mockResolvedValueOnce({ data: { movie: undefined } }) // r1 parse
+        .mockResolvedValueOnce(known); // r2 movie
+      const args = makeArgs(multiInputs);
+      await plugin(args);
+      const urls = mockAxios.mock.calls.map((c) => c[0].url);
+      expect(urls).toEqual([
+        'http://r1:7878/api/v3/movie',
+        'http://r1:7878/api/v3/parse',
+        'http://r2:7879/api/v3/movie',
+      ]);
+      expect(mockAxios.mock.calls[2][0].headers['X-Api-Key']).toBe('k2');
+      expect(removedIndexes(args)).toEqual([3, 7]);
+    });
+
+    it('moves on to the next instance when one errors', async () => {
+      mockAxios
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockResolvedValueOnce(known);
+      const args = makeArgs(multiInputs);
+      await plugin(args);
+      expect(removedIndexes(args)).toEqual([3, 7]);
+    });
+
+    it('tries several Sonarr instances for series', async () => {
+      mockAxios
+        .mockResolvedValueOnce({ data: [] })
+        .mockResolvedValueOnce({ data: { series: undefined } })
+        .mockResolvedValueOnce({ data: [{ tmdbId: 55, originalLanguage: { name: 'Japanese' } }] });
+      const args = makeArgs(
+        {
+          languagesToKeep: 'eng',
+          keepOriginalLanguage: true,
+          sonarrUrl: 'http://s1:8989,http://s2:8990',
+          sonarrApiKey: 'a,b',
+        },
+        movieStreams(),
+        '/media/TV/Show (2020) {tmdb-55}/Season 01/Show - S01E01.mkv',
+      );
+      await plugin(args);
+      expect(mockAxios.mock.calls[2][0].url).toBe('http://s2:8990/api/v3/series');
+      expect(removedIndexes(args)).toEqual([3, 7]);
+    });
+
+    it('keeps all audio by default when every instance fails, and still filters subtitles', async () => {
+      mockAxios.mockRejectedValue(new Error('timeout'));
+      const args = makeArgs(multiInputs);
+      const result = await plugin(args);
+      expect(mockAxios).toHaveBeenCalledTimes(2);
+      expect(removedIndexes(args)).toEqual([5, 7]);
+      expect(result.outputNumber).toBe(1);
+      expect(args.jobLog).toHaveBeenCalledWith(
+        expect.stringContaining('ifOriginalLanguageUnknown=keepAllAudio applied'),
+      );
+    });
+
+    it('keeps all audio when no instance knows the title', async () => {
+      mockAxios.mockResolvedValue({ data: [] });
+      const args = makeArgs({ ...multiInputs, ifOriginalLanguageUnknown: 'keepAllAudio' });
+      await plugin(args);
+      expect(removedIndexes(args)).toEqual([5, 7]);
+    });
+
+    it('keepListOnly keeps the old behaviour when every instance fails', async () => {
+      mockAxios.mockRejectedValue(new Error('timeout'));
+      const args = makeArgs({ ...multiInputs, ifOriginalLanguageUnknown: 'keepListOnly' });
+      await plugin(args);
+      expect(removedIndexes(args)).toEqual([2, 3, 5, 7]);
+      expect(args.jobLog).toHaveBeenCalledWith(
+        expect.stringContaining('ifOriginalLanguageUnknown=keepListOnly applied'),
+      );
+    });
+
+    it('does not throw and keeps all audio when the key list is shorter than the URL list', async () => {
+      mockAxios.mockResolvedValue({ data: [] });
+      const args = makeArgs({ ...multiInputs, radarrApiKey: 'k1' });
+      await plugin(args);
+      expect(mockAxios.mock.calls.every((c) => c[0].url.startsWith('http://r1:7878'))).toBe(true);
+      expect(removedIndexes(args)).toEqual([5, 7]);
+    });
+
+    it('does not apply the unknown handling when the language is known', async () => {
+      mockAxios.mockResolvedValueOnce(known);
+      const args = makeArgs({ ...multiInputs, radarrUrl: 'http://r1:7878', radarrApiKey: 'k1' });
+      await plugin(args);
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(removedIndexes(args)).toEqual([3, 7]);
     });
   });
 
