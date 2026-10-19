@@ -798,8 +798,8 @@ var imagePrompt = 'The image shows subtitle text from a film on a dark backgroun
     + 'What language is the text written in? Answer with only the ISO 639-2 three-letter code '
     + '(for example eng, fre, spa, ger, jpn, chi, kor, rus). If no text is readable, answer und.';
 var textPrompt = function (lines) { return "Subtitle lines from a film:\n".concat(lines, "\n\n")
-    + 'What language are these lines written in? Answer with only the ISO 639-2 three-letter code '
-    + '(for example eng, fre, spa, ger, jpn, chi, kor, rus). If you cannot tell, answer und.'; };
+    // ask for the name, not a code, with no 'und' escape: a 2B model otherwise answers und for clear English text
+    + 'What language are these lines written in? Answer with only the language name in English, one word.'; };
 // ---------- picture subtitles ----------
 var findSubtitleTimes = function (ctx, stream, count) { return __awaiter(void 0, void 0, void 0, function () {
     var windowLength, times, starts, _loop_1, i;

@@ -841,8 +841,8 @@ const imagePrompt = 'The image shows subtitle text from a film on a dark backgro
   + '(for example eng, fre, spa, ger, jpn, chi, kor, rus). If no text is readable, answer und.';
 
 const textPrompt = (lines: string): string => `Subtitle lines from a film:\n${lines}\n\n`
-  + 'What language are these lines written in? Answer with only the ISO 639-2 three-letter code '
-  + '(for example eng, fre, spa, ger, jpn, chi, kor, rus). If you cannot tell, answer und.';
+  // ask for the name, not a code, with no 'und' escape: a 2B model otherwise answers und for clear English text
+  + 'What language are these lines written in? Answer with only the language name in English, one word.';
 
 // ---------- picture subtitles ----------
 
